@@ -3,127 +3,290 @@ import pandas as pd
 import streamlit as st
 
 st.set_page_config(
-    page_title="Riesgo de abandono | TechGadgets",
+    page_title="TechGadgets | Retención",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-DATA_PATH = Path(__file__).parent / "data" / "base_churn_techgadgets.xlsx"
-THRESHOLD = 0.70
+# Diseño compacto
+st.markdown("""
+<style>
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 1rem;
+}
+h1 {
+    font-size: 1.85rem !important;
+    padding-bottom: 0.3rem !important;
+}
+h3 {
+    font-size: 1.05rem !important;
+}
+[data-testid="stMetric"] {
+    border: 1px solid #dce3eb;
+    border-radius: 9px;
+    padding: 12px;
+}
+[data-testid="stMetricValue"] {
+    font-size: 1.8rem;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 0.85rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+DATA_PATH = (
+    Path(__file__).parent
+    / "data"
+    / "base_churn_techgadgets.xlsx"
+)
+UMBRAL = 0.70
+
 
 @st.cache_data
-def load_data():
-    df = pd.read_excel(DATA_PATH, sheet_name="Clientes_Churn")
-    df["Fecha_Ultima_Compra"] = pd.to_datetime(df["Fecha_Ultima_Compra"])
-    df["Score_Churn"] = pd.to_numeric(df["Score_Churn"], errors="coerce")
-    df["Churn_90d"] = pd.to_numeric(df["Churn_90d"], errors="coerce").fillna(0).astype(int)
-    df["Alto_Riesgo"] = df["Score_Churn"] >= THRESHOLD
-    return df
+def cargar_datos():
+    datos = pd.read_excel(
+        DATA_PATH,
+        sheet_name="Clientes_Churn",
+    )
+    datos["Score_Churn"] = pd.to_numeric(
+        datos["Score_Churn"], errors="raise"
+    )
+    datos["Churn_90d"] = pd.to_numeric(
+        datos["Churn_90d"], errors="raise"
+    ).astype(int)
+    datos["Alto_Riesgo"] = datos["Score_Churn"] >= UMBRAL
+    return datos
 
-def score_metrics(data):
-    actual = data["Churn_90d"].astype(int)
-    predicted = data["Alto_Riesgo"].astype(int)
-    tp = int(((predicted == 1) & (actual == 1)).sum())
-    fp = int(((predicted == 1) & (actual == 0)).sum())
-    fn = int(((predicted == 0) & (actual == 1)).sum())
-    precision = tp / (tp + fp) if tp + fp else None
-    recall = tp / (tp + fn) if tp + fn else None
-    f1 = 2 * precision * recall / (precision + recall) if precision is not None and recall is not None and precision + recall else None
+
+def calcular_metricas(datos):
+    real = datos["Churn_90d"].eq(1)
+    predicho = datos["Alto_Riesgo"]
+
+    vp = int((predicho & real).sum())
+    fp = int((predicho & ~real).sum())
+    fn = int((~predicho & real).sum())
+
+    precision = vp / (vp + fp) if vp + fp else None
+    recall = vp / (vp + fn) if vp + fn else None
+    denominador = 2 * vp + fp + fn
+    f1 = 2 * vp / denominador if denominador else None
+
     return precision, recall, f1
 
-def show_pct(value):
-    return f"{value:.1%}" if value is not None else "N/D"
 
-df = load_data()
+def porcentaje(valor):
+    return f"{valor:.1%}" if valor is not None else "N/D"
 
-st.title("Priorizar esta semana a los clientes con mayor riesgo de abandono")
-st.caption("TechGadgets | Tablero académico de churn y acciones de retención")
-st.info(
-    "Los clientes y los scores de esta base son simulados. El tablero muestra cómo se priorizaría una campaña; "
-    "no representa un modelo entrenado para producción."
-)
 
+df = cargar_datos()
+
+# Filtros
 with st.sidebar:
-    st.header("Filtros")
-    channels = sorted(df["Canal"].dropna().unique().tolist())
-    segments = sorted(df["Segmento_RFM"].dropna().unique().tolist())
-    selected_channels = st.multiselect("Canal", channels, default=channels)
-    selected_segments = st.multiselect("Segmento RFM", segments, default=segments)
-    only_high = st.checkbox("Filtrar la tabla a alto riesgo (score >= 70 %)", value=False)
+    st.header("TechGadgets")
+    st.caption("Retención de clientes · S09.2")
 
-filtered = df[
-    df["Canal"].isin(selected_channels)
-    & df["Segmento_RFM"].isin(selected_segments)
-].copy()
-precision, recall, f1 = score_metrics(filtered)
-risk_count = int(filtered["Alto_Riesgo"].sum())
-churn_rate = filtered["Churn_90d"].mean() if len(filtered) else None
+    canales = sorted(df["Canal"].unique().tolist())
+    segmentos = sorted(df["Segmento_RFM"].unique().tolist())
 
-st.subheader("Indicadores del grupo filtrado")
-k1, k2, k3 = st.columns(3)
-k1.metric("Clientes analizados", f"{len(filtered)}")
-k2.metric("Clientes de alto riesgo", f"{risk_count}")
-k3.metric("Churn observado", show_pct(churn_rate))
-k4, k5, k6 = st.columns(3)
-k4.metric("Precision", show_pct(precision), help="De los marcados como alto riesgo, cuántos tienen Churn_90d = 1.")
-k5.metric("Recall", show_pct(recall), help="De los clientes con Churn_90d = 1, cuántos detecta el umbral.")
-k6.metric("F1-Score", show_pct(f1), help="Equilibrio entre Precision y Recall.")
-
-st.subheader("Clientes priorizados")
-st.write("Ordenados por Score_Churn, de mayor a menor. La acción aparece junto a cada cliente.")
-ranking = filtered.sort_values("Score_Churn", ascending=False).copy()
-if only_high:
-    ranking = ranking[ranking["Alto_Riesgo"]]
-ranking["Score_Churn"] = (ranking["Score_Churn"] * 100).round(1).astype(str) + " %"
-show_columns = [
-    "Cliente_ID", "Score_Churn", "Nivel_Riesgo", "Segmento_RFM", "Canal",
-    "Fecha_Ultima_Compra", "Accion_Recomendada",
-]
-st.dataframe(
-    ranking[show_columns],
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Cliente_ID": "Cliente",
-        "Score_Churn": "Score de churn",
-        "Nivel_Riesgo": "Nivel de riesgo",
-        "Segmento_RFM": "Segmento RFM",
-        "Fecha_Ultima_Compra": st.column_config.DateColumn("Última compra", format="DD/MM/YYYY"),
-        "Accion_Recomendada": "Acción recomendada",
-    },
-)
-
-csv_bytes = ranking[show_columns].to_csv(index=False).encode("utf-8-sig")
-st.download_button(
-    "Descargar lista filtrada",
-    data=csv_bytes,
-    file_name="clientes_priorizados_techgadgets.csv",
-    mime="text/csv",
-)
-
-left, right = st.columns(2)
-with left:
-    st.subheader("Clientes de alto riesgo por segmento RFM")
-    by_segment = (
-        filtered.assign(Grupo_Riesgo=filtered["Alto_Riesgo"].map({True: "Alto riesgo", False: "Bajo/medio"}))
-        .groupby(["Segmento_RFM", "Grupo_Riesgo"])
-        .size()
-        .unstack(fill_value=0)
+    canal = st.multiselect(
+        "Canal",
+        options=canales,
+        default=canales,
     )
-    st.bar_chart(by_segment, height=300)
-with right:
-    st.subheader("Alto riesgo y churn observado por canal")
-    by_channel = (
-        filtered.assign(Alto_Riesgo_n=filtered["Alto_Riesgo"].astype(int))
-        .groupby("Canal")
-        .agg(
-            Clientes_alto_riesgo=("Alto_Riesgo_n", "sum"),
-            Churn_observado=("Churn_90d", "sum"),
+    segmento = st.multiselect(
+        "Segmento RFM",
+        options=segmentos,
+        default=segmentos,
+    )
+
+    st.divider()
+    st.caption("Datos y scores simulados · Uso académico")
+
+    with st.expander("Reglas y metodología"):
+        st.write("Alto riesgo: score ≥ 70 %.")
+        st.write("Churn observado: 90 días o más sin comprar.")
+        st.write(
+            "Precision, Recall y F1 comparan el score simulado "
+            "con Churn_90d dentro de los filtros seleccionados. "
+            "No son una validación predictiva de un modelo entrenado."
         )
-    )
-    st.bar_chart(by_channel, height=300)
+        st.write(
+            "Actualización propuesta: semanal, "
+            "reemplazando la base de clientes."
+        )
+
+datos = df[
+    df["Canal"].isin(canal)
+    & df["Segmento_RFM"].isin(segmento)
+].copy()
+
+st.title("TechGadgets · Priorizar clientes en riesgo")
+
+if datos.empty:
+    st.info("Selecciona un canal y un segmento con clientes.")
+    st.stop()
+
+precision, recall, f1 = calcular_metricas(datos)
+cantidad_riesgo = int(datos["Alto_Riesgo"].sum())
 
 st.caption(
-    "Regla del tablero: Score_Churn >= 0,70 = alto riesgo. "
-    "Las métricas se calculan con la etiqueta simulada Churn_90d y el grupo filtrado."
+    f"Acción semanal: revisar {cantidad_riesgo} clientes "
+    "con score ≥ 70 % para la campaña de reactivación."
 )
+
+# Indicadores en una sola fila
+indicadores = [
+    (
+        "Clientes",
+        str(len(datos)),
+        "Clientes incluidos en los filtros seleccionados.",
+    ),
+    (
+        "Alto riesgo",
+        str(cantidad_riesgo),
+        "Clientes con score igual o superior al 70 %.",
+    ),
+    (
+        "Churn observado",
+        porcentaje(datos["Churn_90d"].mean()),
+        "Porcentaje con 90 días o más sin compras.",
+    ),
+    (
+        "Precision",
+        porcentaje(precision),
+        "De los clasificados como alto riesgo, cuántos tienen churn observado.",
+    ),
+    (
+        "Recall",
+        porcentaje(recall),
+        "De los clientes con churn observado, cuántos fueron clasificados como alto riesgo.",
+    ),
+    (
+        "F1-Score",
+        porcentaje(f1),
+        "Equilibrio entre Precision y Recall.",
+    ),
+]
+
+for columna, (nombre, valor, ayuda) in zip(
+    st.columns(6), indicadores
+):
+    columna.metric(nombre, valor, help=ayuda)
+
+# Gráficos antes del ranking
+izquierda, derecha = st.columns(2)
+
+with izquierda:
+    st.subheader("Alto riesgo por segmento RFM")
+
+    por_segmento = (
+        datos.groupby("Segmento_RFM")["Alto_Riesgo"]
+        .sum()
+        .astype(int)
+        .sort_values(ascending=False)
+        .rename("Clientes")
+    )
+
+    st.bar_chart(
+        por_segmento,
+        horizontal=True,
+        color="#E07A36",
+        height=260,
+        x_label="Clientes de alto riesgo",
+        y_label="Segmento RFM",
+        sort=False,
+    )
+
+with derecha:
+    st.subheader("Riesgo y abandono por canal")
+
+    por_canal = (
+        datos.groupby("Canal")
+        .agg(
+            riesgo=("Alto_Riesgo", "sum"),
+            abandono=("Churn_90d", "sum"),
+        )
+        .astype(int)
+        .rename(columns={
+            "riesgo": "Alto riesgo",
+            "abandono": "Churn observado",
+        })
+    )
+
+    st.bar_chart(
+        por_canal,
+        horizontal=True,
+        stack=False,
+        color=["#E07A36", "#2874A6"],
+        height=260,
+        x_label="Clientes",
+        y_label="Canal",
+    )
+
+# Ranking: este filtro solo afecta la tabla
+titulo, control = st.columns([3, 1])
+
+with titulo:
+    st.subheader("Ranking y acción recomendada")
+
+with control:
+    solo_alto = st.checkbox("Solo alto riesgo", value=True)
+
+ranking = datos.sort_values(
+    ["Score_Churn", "Cliente_ID"],
+    ascending=[False, True],
+).copy()
+
+if solo_alto:
+    ranking = ranking[ranking["Alto_Riesgo"]].copy()
+
+ranking["Score (%)"] = (ranking["Score_Churn"] * 100).round(1)
+
+columnas = [
+    "Cliente_ID",
+    "Score (%)",
+    "Nivel_Riesgo",
+    "Segmento_RFM",
+    "Canal",
+    "Accion_Recomendada",
+]
+
+tabla = ranking[columnas].rename(columns={
+    "Cliente_ID": "Cliente",
+    "Nivel_Riesgo": "Riesgo",
+    "Segmento_RFM": "Segmento RFM",
+    "Accion_Recomendada": "Acción recomendada",
+})
+
+if tabla.empty:
+    st.info("No hay clientes de alto riesgo en esta selección.")
+else:
+    st.dataframe(
+        tabla,
+        hide_index=True,
+        use_container_width=True,
+        height=250,
+        column_config={
+            "Score (%)": st.column_config.ProgressColumn(
+                "Score (%)",
+                min_value=0,
+                max_value=100,
+                format="%.1f%%",
+                width="medium",
+            ),
+            "Acción recomendada": st.column_config.TextColumn(
+                "Acción recomendada",
+                width="large",
+            ),
+        },
+    )
+
+    st.download_button(
+        "Descargar clientes seleccionados",
+        data=tabla.to_csv(index=False).encode("utf-8-sig"),
+        file_name="clientes_campana_techgadgets.csv",
+        mime="text/csv",
+    )
